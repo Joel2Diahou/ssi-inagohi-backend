@@ -1,247 +1,254 @@
+import os
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
-import sqlite3
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from datetime import datetime
+import json
 
 app = Flask(__name__, static_folder='../site_web', static_url_path='')
 CORS(app)
 
+# Récupérer l'URL de la base de données depuis les variables d'environnement
+DATABASE_URL = os.environ.get('DATABASE_URL')
+
+def get_db_connection():
+    """Établit une connexion à la base de données PostgreSQL"""
+    conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+    return conn
+
 def init_db():
-    conn = sqlite3.connect('ssi_inagohi.db')
+    """Initialise les tables dans PostgreSQL"""
+    conn = get_db_connection()
     c = conn.cursor()
     
     # Table compteur
-    c.execute('''CREATE TABLE IF NOT EXISTS compteur 
-                 (id INTEGER PRIMARY KEY, total INTEGER)''')
-    c.execute("INSERT OR IGNORE INTO compteur (id, total) VALUES (1, 0)")
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS compteur (
+            id SERIAL PRIMARY KEY,
+            total INTEGER DEFAULT 0,
+            derniere_mise_a_jour TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
     
-    # Table evenements
-    c.execute('''CREATE TABLE IF NOT EXISTS evenements 
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                  type TEXT, nom TEXT, heure TEXT, date TEXT)''')
+    # Vérifier si le compteur existe déjà
+    c.execute("SELECT COUNT(*) FROM compteur")
+    if c.fetchone()[0] == 0:
+        c.execute("INSERT INTO compteur (total) VALUES (0)")
     
     # Table eleves
-    c.execute('''CREATE TABLE IF NOT EXISTS eleves
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  nom TEXT NOT NULL,
-                  prenom TEXT NOT NULL,
-                  classe TEXT,
-                  photo_path TEXT,
-                  parent_nom TEXT,
-                  parent_tel TEXT,
-                  parent_email TEXT,
-                  date_inscription TEXT)''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS eleves (
+            id SERIAL PRIMARY KEY,
+            nom VARCHAR(100) NOT NULL,
+            prenom VARCHAR(100) NOT NULL,
+            sexe CHAR(1),
+            classe VARCHAR(50),
+            photo_path TEXT,
+            parent_nom VARCHAR(200),
+            parent_tel VARCHAR(20),
+            parent_email VARCHAR(100),
+            date_inscription DATE DEFAULT CURRENT_DATE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # Table evenements
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS evenements (
+            id SERIAL PRIMARY KEY,
+            type VARCHAR(50) NOT NULL,
+            personne_nom VARCHAR(200),
+            personne_statut VARCHAR(50),
+            date DATE DEFAULT CURRENT_DATE,
+            heure TIME DEFAULT CURRENT_TIME,
+            lieu VARCHAR(100),
+            details TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
     
     # Table alertes
-    c.execute('''CREATE TABLE IF NOT EXISTS alertes
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  type TEXT NOT NULL,
-                  date TEXT,
-                  heure TEXT,
-                  lieu TEXT,
-                  details TEXT,
-                  photo TEXT,
-                  statut TEXT DEFAULT 'non_traite')''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS alertes (
+            id SERIAL PRIMARY KEY,
+            type VARCHAR(50) NOT NULL,
+            date DATE DEFAULT CURRENT_DATE,
+            heure TIME DEFAULT CURRENT_TIME,
+            lieu VARCHAR(100),
+            details TEXT,
+            photo TEXT,
+            statut VARCHAR(20) DEFAULT 'non_traite',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
     
     # Table absences
-    c.execute('''CREATE TABLE IF NOT EXISTS absences
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  eleve_id INTEGER,
-                  eleve_nom TEXT,
-                  classe TEXT,
-                  date TEXT,
-                  heure_debut TEXT,
-                  heure_fin TEXT,
-                  duree_minutes INTEGER,
-                  notifie BOOLEAN DEFAULT 0)''')
-    
-    # Ajouter des élèves de test si la table est vide
-    c.execute("SELECT COUNT(*) FROM eleves")
-    if c.fetchone()[0] == 0:
-        eleves_test = [
-            ("KOUASSI", "Jean", "4ème A", "M. KOUASSI", "+225 01 23 45 67", "parent.kouassi@email.com"),
-            ("TRAORE", "Awa", "4ème A", "Mme TRAORE", "+225 01 23 45 68", "parent.traore@email.com"),
-            ("TOURE", "Ibrahim", "3ème B", "M. TOURE", "+225 01 23 45 69", "parent.toure@email.com"),
-            ("BAMBA", "Fatou", "Tle D", "M. BAMBA", "+225 07 89 12 34", "parent.bamba@email.com"),
-            ("KONE", "Moussa", "2nde C", "Mme KONE", "+225 05 67 89 01", "parent.kone@email.com"),
-        ]
-        for e in eleves_test:
-            c.execute('''INSERT INTO eleves (nom, prenom, classe, parent_nom, parent_tel, parent_email, date_inscription)
-                         VALUES (?, ?, ?, ?, ?, ?, ?)''',
-                      (e[0], e[1], e[2], e[3], e[4], e[5], datetime.now().strftime("%Y-%m-%d")))
-    
-    # Ajouter des alertes de test
-    c.execute("SELECT COUNT(*) FROM alertes")
-    if c.fetchone()[0] == 0:
-        alertes_test = [
-            ("intrusion", "2026-04-11", "08:15:22", "Portail principal", "Personne non identifiée", None),
-            ("objet_dangereux", "2026-04-11", "09:30:10", "Portail principal", "Couteau détecté", None),
-            ("intrusion", "2026-04-10", "14:20:05", "Portail secondaire", "Tentative d'escalade", None),
-            ("bagarre", "2026-04-10", "10:45:33", "Cour de récréation", "Attroupement suspect", None),
-        ]
-        for a in alertes_test:
-            c.execute('''INSERT INTO alertes (type, date, heure, lieu, details, photo, statut)
-                         VALUES (?, ?, ?, ?, ?, ?, 'non_traite')''', a)
-    
-    # Ajouter des absences de test
-    c.execute("SELECT COUNT(*) FROM absences")
-    if c.fetchone()[0] == 0:
-        absences_test = [
-            (1, "KOUASSI Jean", "4ème A", "2026-04-11", "08:00", "09:30", 90, 0),
-            (2, "TRAORE Awa", "4ème A", "2026-04-11", "10:00", "10:45", 45, 0),
-            (3, "TOURE Ibrahim", "3ème B", "2026-04-10", "14:00", "15:30", 90, 1),
-        ]
-        for a in absences_test:
-            c.execute('''INSERT INTO absences (eleve_id, eleve_nom, classe, date, heure_debut, heure_fin, duree_minutes, notifie)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)''', a)
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS absences (
+            id SERIAL PRIMARY KEY,
+            eleve_id INTEGER,
+            eleve_nom VARCHAR(200),
+            classe VARCHAR(50),
+            date DATE DEFAULT CURRENT_DATE,
+            heure_debut TIME,
+            heure_fin TIME,
+            duree_minutes INTEGER,
+            notifie BOOLEAN DEFAULT FALSE,
+            justifie BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
     
     conn.commit()
     conn.close()
-    print("✅ Base de donnees OK")
-
-# ============================================
-# ROUTES SITE WEB
-# ============================================
-
-@app.route('/')
-def index():
-    return send_from_directory('../site_web', 'index.html')
-
-@app.route('/<path:path>')
-def serve_static(path):
-    return send_from_directory('../site_web', path)
+    print("✅ Base de données PostgreSQL initialisée")
 
 # ============================================
 # ROUTES API
 # ============================================
 
-@app.route('/api/status')
+@app.route('/api/status', methods=['GET'])
 def status():
-    return jsonify({"status": "ok", "message": "API SSI Inagohi operationnelle"})
+    return jsonify({
+        "status": "ok",
+        "message": "API SSI Inagohi operationnelle",
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "database": "PostgreSQL" if DATABASE_URL else "Non connectée"
+    })
 
-@app.route('/api/compteur')
-def compteur():
-    conn = sqlite3.connect('ssi_inagohi.db')
-    c = conn.cursor()
-    c.execute("SELECT total FROM compteur WHERE id=1")
-    total = c.fetchone()[0]
+@app.route('/api/compteur', methods=['GET'])
+def get_compteur():
+    conn = get_db_connection()
+    c = conn.cursor(cursor_factory=RealDictCursor)
+    c.execute("SELECT total FROM compteur WHERE id = 1")
+    result = c.fetchone()
     conn.close()
-    return jsonify({"total": total})
+    return jsonify({"total": result['total'] if result else 0})
 
 @app.route('/api/entree', methods=['POST'])
 def entree():
     data = request.json
     nom = data.get('nom', 'Inconnu')
     now = datetime.now()
-    conn = sqlite3.connect('ssi_inagohi.db')
+    
+    conn = get_db_connection()
     c = conn.cursor()
-    c.execute("UPDATE compteur SET total = total + 1 WHERE id=1")
-    c.execute("INSERT INTO evenements (type, nom, heure, date) VALUES ('entree', ?, ?, ?)",
-              (nom, now.strftime("%H:%M:%S"), now.strftime("%Y-%m-%d")))
+    c.execute("UPDATE compteur SET total = total + 1, derniere_mise_a_jour = %s WHERE id = 1", (now,))
+    c.execute(
+        "INSERT INTO evenements (type, personne_nom, date, heure) VALUES ('entree', %s, %s, %s)",
+        (nom, now.date(), now.time())
+    )
     conn.commit()
     conn.close()
-    print(f"📥 {nom} est entre a {now.strftime('%H:%M:%S')}")
+    
+    print(f"📥 {nom} est entré à {now.strftime('%H:%M:%S')}")
     return jsonify({"status": "ok"})
 
-@app.route('/api/evenements')
-def evenements():
-    conn = sqlite3.connect('ssi_inagohi.db')
-    c = conn.cursor()
-    c.execute("SELECT type, nom, heure FROM evenements ORDER BY id DESC LIMIT 20")
+@app.route('/api/evenements', methods=['GET'])
+def get_evenements():
+    conn = get_db_connection()
+    c = conn.cursor(cursor_factory=RealDictCursor)
+    c.execute("SELECT type, personne_nom as nom, heure FROM evenements ORDER BY id DESC LIMIT 20")
     events = c.fetchall()
     conn.close()
-    return jsonify([{"type": e[0], "nom": e[1], "heure": e[2]} for e in events])
-
-# ============================================
-# ROUTES ÉLÈVES
-# ============================================
+    
+    # Convertir les heures en string
+    for e in events:
+        if e['heure']:
+            e['heure'] = e['heure'].strftime('%H:%M:%S')
+    
+    return jsonify(events)
 
 @app.route('/api/eleves', methods=['GET'])
 def get_eleves():
-    conn = sqlite3.connect('ssi_inagohi.db')
-    c = conn.cursor()
-    c.execute("SELECT id, nom, prenom, classe, photo_path, parent_nom, parent_tel, parent_email FROM eleves")
+    conn = get_db_connection()
+    c = conn.cursor(cursor_factory=RealDictCursor)
+    c.execute("SELECT id, nom, prenom, sexe, classe, photo_path, parent_nom, parent_tel, parent_email FROM eleves ORDER BY nom")
     eleves = c.fetchall()
     conn.close()
-    return jsonify([{
-        "id": e[0], "nom": e[1], "prenom": e[2], "classe": e[3],
-        "photo_path": e[4], "parent_nom": e[5], "parent_tel": e[6], "parent_email": e[7]
-    } for e in eleves])
+    return jsonify(eleves)
 
 @app.route('/api/eleves', methods=['POST'])
 def add_eleve():
     data = request.json
-    conn = sqlite3.connect('ssi_inagohi.db')
+    conn = get_db_connection()
     c = conn.cursor()
-    c.execute('''INSERT INTO eleves (nom, prenom, classe, photo_path, parent_nom, parent_tel, parent_email, date_inscription)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-              (data['nom'], data['prenom'], data['classe'], data.get('photo_path'),
-               data.get('parent_nom'), data.get('parent_tel'), data.get('parent_email'),
-               datetime.now().strftime("%Y-%m-%d")))
+    c.execute('''
+        INSERT INTO eleves (nom, prenom, sexe, classe, photo_path, parent_nom, parent_tel, parent_email, date_inscription)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+    ''', (
+        data['nom'], data['prenom'], data.get('sexe'), data['classe'],
+        data.get('photo_path'), data.get('parent_nom'), data.get('parent_tel'),
+        data.get('parent_email'), datetime.now().date()
+    ))
     conn.commit()
     conn.close()
     return jsonify({"status": "ok"}), 201
 
 @app.route('/api/eleves/<int:id>', methods=['DELETE'])
 def delete_eleve(id):
-    conn = sqlite3.connect('ssi_inagohi.db')
+    conn = get_db_connection()
     c = conn.cursor()
-    c.execute("DELETE FROM eleves WHERE id = ?", (id,))
+    c.execute("DELETE FROM eleves WHERE id = %s", (id,))
     conn.commit()
     conn.close()
     return jsonify({"status": "ok"})
-
-# ============================================
-# ROUTES ALERTES
-# ============================================
 
 @app.route('/api/alertes', methods=['GET'])
 def get_alertes():
-    conn = sqlite3.connect('ssi_inagohi.db')
-    c = conn.cursor()
-    c.execute("SELECT id, type, date, heure, lieu, details, photo, statut FROM alertes ORDER BY id DESC")
+    conn = get_db_connection()
+    c = conn.cursor(cursor_factory=RealDictCursor)
+    c.execute("SELECT id, type, date, heure, lieu, details, photo, statut FROM alertes ORDER BY id DESC LIMIT 50")
     alertes = c.fetchall()
     conn.close()
-    return jsonify([{
-        "id": a[0], "type": a[1], "date": a[2], "heure": a[3],
-        "lieu": a[4], "details": a[5], "photo": a[6], "statut": a[7]
-    } for a in alertes])
+    
+    for a in alertes:
+        if a['date']:
+            a['date'] = a['date'].strftime('%Y-%m-%d')
+        if a['heure']:
+            a['heure'] = a['heure'].strftime('%H:%M:%S')
+    
+    return jsonify(alertes)
 
 @app.route('/api/alertes/<int:id>/traiter', methods=['PUT'])
 def traiter_alerte(id):
-    conn = sqlite3.connect('ssi_inagohi.db')
+    conn = get_db_connection()
     c = conn.cursor()
-    c.execute("UPDATE alertes SET statut = 'traite' WHERE id = ?", (id,))
+    c.execute("UPDATE alertes SET statut = 'traite' WHERE id = %s", (id,))
     conn.commit()
     conn.close()
     return jsonify({"status": "ok"})
-
-# ============================================
-# ROUTES ABSENCES
-# ============================================
 
 @app.route('/api/absences', methods=['GET'])
 def get_absences():
     date = request.args.get('date', datetime.now().strftime("%Y-%m-%d"))
-    conn = sqlite3.connect('ssi_inagohi.db')
-    c = conn.cursor()
-    c.execute("SELECT * FROM absences WHERE date = ? ORDER BY heure_debut DESC", (date,))
+    conn = get_db_connection()
+    c = conn.cursor(cursor_factory=RealDictCursor)
+    c.execute("SELECT * FROM absences WHERE date = %s ORDER BY heure_debut DESC", (date,))
     absences = c.fetchall()
     conn.close()
-    return jsonify([{
-        "id": a[0], "eleve_id": a[1], "eleve_nom": a[2], "classe": a[3],
-        "date": a[4], "heure_debut": a[5], "heure_fin": a[6],
-        "duree_minutes": a[7], "notifie": a[8]
-    } for a in absences])
+    
+    for a in absences:
+        if a['date']:
+            a['date'] = a['date'].strftime('%Y-%m-%d')
+        if a['heure_debut']:
+            a['heure_debut'] = a['heure_debut'].strftime('%H:%M:%S')
+        if a['heure_fin']:
+            a['heure_fin'] = a['heure_fin'].strftime('%H:%M:%S')
+    
+    return jsonify(absences)
 
 # ============================================
 # DÉMARRAGE
 # ============================================
 
 if __name__ == '__main__':
-    init_db()
-    print("=" * 50)
-    print("🚀 SERVEUR SSI INAGOHI")
-    print("📡 http://localhost:5000")
-    print("=" * 50)
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    # Initialiser la base de données si l'URL est présente
+    if DATABASE_URL:
+        init_db()
+    else:
+        print("⚠️ DATABASE_URL non définie - Utilisation du mode dégradé")
+    
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
