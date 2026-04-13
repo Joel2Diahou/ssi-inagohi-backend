@@ -10,7 +10,7 @@ app = Flask(__name__, static_folder='../site_web', static_url_path='')
 CORS(app)
 
 # Récupérer l'URL de la base de données depuis les variables d'environnement
-DATABASE_URL = os.environ.get('DATABASE_URL')
+DATABASE_URL = "postgresql://ssi_inagohi_db_user:DAzbq8eKkjgkWne7rbCQfHUfFvQMm4wO@dpg-d7dgvr67r5hc73a07nn0-a.frankfurt-postgres.render.com/ssi_inagohi_db"
 
 def get_db_connection():
     """Établit une connexion à la base de données PostgreSQL"""
@@ -18,7 +18,7 @@ def get_db_connection():
     return conn
 
 def init_db():
-    """Initialise les tables dans PostgreSQL"""
+    """Initialise les tables dans PostgreSQL (VIDES, sans données de test)"""
     conn = get_db_connection()
     c = conn.cursor()
     
@@ -100,9 +100,49 @@ def init_db():
         )
     ''')
     
+    # Table classes
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS classes (
+            id SERIAL PRIMARY KEY,
+            nom VARCHAR(50) UNIQUE NOT NULL,
+            salle VARCHAR(50),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # Table personnel
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS personnel (
+            id SERIAL PRIMARY KEY,
+            nom VARCHAR(100) NOT NULL,
+            prenom VARCHAR(100) NOT NULL,
+            role VARCHAR(50),
+            matiere VARCHAR(100),
+            photo TEXT,
+            telephone VARCHAR(20),
+            email VARCHAR(100),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # Table parents
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS parents (
+            id SERIAL PRIMARY KEY,
+            nom VARCHAR(100) NOT NULL,
+            prenom VARCHAR(100) NOT NULL,
+            lien VARCHAR(50),
+            eleve_id INTEGER REFERENCES eleves(id) ON DELETE SET NULL,
+            photo TEXT,
+            telephone VARCHAR(20),
+            email VARCHAR(100),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
     conn.commit()
     conn.close()
-    print("✅ Base de données PostgreSQL initialisée")
+    print("✅ Base de données PostgreSQL initialisée (tables vides)")
 
 # ============================================
 # ROUTES API
@@ -153,12 +193,15 @@ def get_evenements():
     events = c.fetchall()
     conn.close()
     
-    # Convertir les heures en string
     for e in events:
         if e['heure']:
             e['heure'] = e['heure'].strftime('%H:%M:%S')
     
     return jsonify(events)
+
+# ============================================
+# ROUTES ÉLÈVES
+# ============================================
 
 @app.route('/api/eleves', methods=['GET'])
 def get_eleves():
@@ -195,6 +238,131 @@ def delete_eleve(id):
     conn.close()
     return jsonify({"status": "ok"})
 
+# ============================================
+# ROUTES CLASSES
+# ============================================
+
+@app.route('/api/classes', methods=['GET'])
+def get_classes():
+    conn = get_db_connection()
+    c = conn.cursor(cursor_factory=RealDictCursor)
+    c.execute("SELECT id, nom, salle FROM classes ORDER BY nom")
+    classes = c.fetchall()
+    conn.close()
+    return jsonify(classes)
+
+@app.route('/api/classes', methods=['POST'])
+def add_classe():
+    data = request.json
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute('''
+            INSERT INTO classes (nom, salle)
+            VALUES (%s, %s)
+        ''', (data['nom'], data.get('salle')))
+        conn.commit()
+        conn.close()
+        return jsonify({"status": "ok"}), 201
+    except psycopg2.IntegrityError:
+        conn.close()
+        return jsonify({"error": "Cette classe existe déjà"}), 400
+
+@app.route('/api/classes/<int:id>', methods=['DELETE'])
+def delete_classe(id):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("DELETE FROM classes WHERE id = %s", (id,))
+    conn.commit()
+    conn.close()
+    return jsonify({"status": "ok"})
+
+# ============================================
+# ROUTES PERSONNEL
+# ============================================
+
+@app.route('/api/personnel', methods=['GET'])
+def get_personnel():
+    conn = get_db_connection()
+    c = conn.cursor(cursor_factory=RealDictCursor)
+    c.execute("SELECT id, nom, prenom, role, matiere, photo, telephone, email FROM personnel ORDER BY nom")
+    personnel = c.fetchall()
+    conn.close()
+    return jsonify(personnel)
+
+@app.route('/api/personnel', methods=['POST'])
+def add_personnel():
+    data = request.json
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('''
+        INSERT INTO personnel (nom, prenom, role, matiere, photo, telephone, email)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+    ''', (
+        data['nom'], data['prenom'], data.get('role'), data.get('matiere'),
+        data.get('photo'), data.get('telephone'), data.get('email')
+    ))
+    conn.commit()
+    conn.close()
+    return jsonify({"status": "ok"}), 201
+
+@app.route('/api/personnel/<int:id>', methods=['DELETE'])
+def delete_personnel(id):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("DELETE FROM personnel WHERE id = %s", (id,))
+    conn.commit()
+    conn.close()
+    return jsonify({"status": "ok"})
+
+# ============================================
+# ROUTES PARENTS
+# ============================================
+
+@app.route('/api/parents', methods=['GET'])
+def get_parents():
+    conn = get_db_connection()
+    c = conn.cursor(cursor_factory=RealDictCursor)
+    c.execute("""
+        SELECT p.id, p.nom, p.prenom, p.lien, p.eleve_id, p.photo, p.telephone, p.email,
+               e.nom as eleve_nom, e.prenom as eleve_prenom
+        FROM parents p
+        LEFT JOIN eleves e ON p.eleve_id = e.id
+        ORDER BY p.nom
+    """)
+    parents = c.fetchall()
+    conn.close()
+    return jsonify(parents)
+
+@app.route('/api/parents', methods=['POST'])
+def add_parent():
+    data = request.json
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('''
+        INSERT INTO parents (nom, prenom, lien, eleve_id, photo, telephone, email)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+    ''', (
+        data['nom'], data['prenom'], data.get('lien'), data.get('eleve_id'),
+        data.get('photo'), data.get('telephone'), data.get('email')
+    ))
+    conn.commit()
+    conn.close()
+    return jsonify({"status": "ok"}), 201
+
+@app.route('/api/parents/<int:id>', methods=['DELETE'])
+def delete_parent(id):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("DELETE FROM parents WHERE id = %s", (id,))
+    conn.commit()
+    conn.close()
+    return jsonify({"status": "ok"})
+
+# ============================================
+# ROUTES ALERTES
+# ============================================
+
 @app.route('/api/alertes', methods=['GET'])
 def get_alertes():
     conn = get_db_connection()
@@ -220,6 +388,10 @@ def traiter_alerte(id):
     conn.close()
     return jsonify({"status": "ok"})
 
+# ============================================
+# ROUTES ABSENCES
+# ============================================
+
 @app.route('/api/absences', methods=['GET'])
 def get_absences():
     date = request.args.get('date', datetime.now().strftime("%Y-%m-%d"))
@@ -244,7 +416,6 @@ def get_absences():
 # ============================================
 
 if __name__ == '__main__':
-    # Initialiser la base de données si l'URL est présente
     if DATABASE_URL:
         init_db()
     else:
