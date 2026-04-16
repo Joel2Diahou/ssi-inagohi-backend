@@ -1,0 +1,6 @@
+venv/
+alertes_captures/
+data_backup/
+*.pt
+__pycache__/
+*.pyc
