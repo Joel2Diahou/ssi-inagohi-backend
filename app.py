@@ -24,11 +24,21 @@ def init_db():
     c.execute("INSERT INTO compteur (total) SELECT 0 WHERE NOT EXISTS (SELECT 1 FROM compteur)")
     
     # Table eleves
-    c.execute('''CREATE TABLE IF NOT EXISTS eleves (
-        id SERIAL PRIMARY KEY, nom VARCHAR(100) NOT NULL, prenom VARCHAR(100) NOT NULL,
-        sexe CHAR(1), classe VARCHAR(50), photo_path TEXT,
-        parent_nom VARCHAR(200), parent_tel VARCHAR(20), parent_email VARCHAR(100),
-        date_inscription DATE DEFAULT CURRENT_DATE, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS eleves (
+            id SERIAL PRIMARY KEY,
+            matricule VARCHAR(50) UNIQUE NOT NULL,
+            nom VARCHAR(100) NOT NULL,
+            prenom VARCHAR(100) NOT NULL,
+            sexe CHAR(1),
+            classe VARCHAR(50),
+            photo_path TEXT,
+            parent_nom VARCHAR(200),
+            parent_tel VARCHAR(20),
+            parent_email VARCHAR(100),
+            date_inscription DATE DEFAULT CURRENT_DATE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
     
     # Table evenements
     c.execute('''CREATE TABLE IF NOT EXISTS evenements (
@@ -43,12 +53,25 @@ def init_db():
         heure TIME DEFAULT CURRENT_TIME, lieu VARCHAR(100), details TEXT, photo TEXT,
         statut VARCHAR(20) DEFAULT 'non_traite', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     
-    # Table absences
+    # Table absences (COMPLÈTE)
     c.execute('''CREATE TABLE IF NOT EXISTS absences (
-        id SERIAL PRIMARY KEY, eleve_id INTEGER, eleve_nom VARCHAR(200), classe VARCHAR(50),
-        date DATE DEFAULT CURRENT_DATE, heure_debut TIME, heure_fin TIME,
-        duree_minutes INTEGER, notifie BOOLEAN DEFAULT FALSE, justifie BOOLEAN DEFAULT FALSE,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+        id SERIAL PRIMARY KEY, 
+        eleve_id INTEGER, 
+        eleve_nom VARCHAR(200), 
+        classe VARCHAR(50),
+        date DATE DEFAULT CURRENT_DATE, 
+        heure_debut TIME, 
+        heure_fin TIME,
+        duree_minutes INTEGER, 
+        notifie BOOLEAN DEFAULT FALSE, 
+        justifie BOOLEAN DEFAULT FALSE,
+        permission_accordee BOOLEAN DEFAULT NULL,
+        validee_par INTEGER REFERENCES personnel(id),
+        date_validation TIMESTAMP,
+        lieu VARCHAR(100) DEFAULT 'Salle de classe',
+        camera_id INTEGER,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )''')
     
     # Table classes
     c.execute('''CREATE TABLE IF NOT EXISTS classes (
@@ -67,6 +90,18 @@ def init_db():
         lien VARCHAR(50), eleve_id INTEGER REFERENCES eleves(id) ON DELETE SET NULL,
         photo TEXT, telephone VARCHAR(20), email VARCHAR(100),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+
+    # Table emploi_du_temps
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS emploi_du_temps (
+            id SERIAL PRIMARY KEY,
+            classe VARCHAR(50) NOT NULL,
+            professeur_id INTEGER REFERENCES personnel(id),
+            jour_semaine INTEGER,
+            heure_debut TIME,
+            heure_fin TIME,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
     
     conn.commit()
     conn.close()
@@ -88,10 +123,6 @@ def get_compteur():
     result = c.fetchone()
     conn.close()
     return jsonify({"total": result['total'] if result else 0})
-
-# ============================================
-# ROUTE EVENEMENT (CORRIGÉE)
-# ============================================
 
 @app.route('/api/evenement', methods=['POST'])
 def recevoir_evenement():
@@ -139,7 +170,7 @@ def get_evenements():
 def get_eleves():
     conn = get_db_connection()
     c = conn.cursor(cursor_factory=RealDictCursor)
-    c.execute("SELECT id, nom, prenom, sexe, classe, photo_path, parent_nom, parent_tel, parent_email FROM eleves ORDER BY nom")
+    c.execute("SELECT id, matricule, nom, prenom, sexe, classe, photo_path FROM eleves ORDER BY nom")
     eleves = c.fetchall()
     conn.close()
     return jsonify(eleves)
@@ -149,13 +180,25 @@ def add_eleve():
     data = request.json
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute('''INSERT INTO eleves (nom, prenom, sexe, classe, photo_path, parent_nom, parent_tel, parent_email, date_inscription)
-                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)''',
-              (data['nom'], data['prenom'], data.get('sexe'), data['classe'], data.get('photo_path'),
-               data.get('parent_nom'), data.get('parent_tel'), data.get('parent_email'), datetime.now().date()))
-    conn.commit()
-    conn.close()
-    return jsonify({"status": "ok"}), 201
+    try:
+        c.execute('''
+            INSERT INTO eleves (matricule, nom, prenom, sexe, classe, photo_path, date_inscription)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ''', (
+            data['matricule'],
+            data['nom'],
+            data['prenom'],
+            data.get('sexe'),
+            data['classe'],
+            data.get('photo_path'),
+            datetime.now().date()
+        ))
+        conn.commit()
+        conn.close()
+        return jsonify({"status": "ok"}), 201
+    except psycopg2.IntegrityError:
+        conn.close()
+        return jsonify({"error": "Ce matricule existe déjà"}), 400
 
 @app.route('/api/eleves/<int:id>', methods=['DELETE'])
 def delete_eleve(id):
@@ -167,7 +210,7 @@ def delete_eleve(id):
     return jsonify({"status": "ok"})
 
 # ============================================
-# ROUTES CLASSES (AJOUTÉES)
+# ROUTES CLASSES
 # ============================================
 
 @app.route('/api/classes', methods=['GET'])
@@ -203,7 +246,7 @@ def delete_classe(id):
     return jsonify({"status": "ok"})
 
 # ============================================
-# ROUTES PERSONNEL (AJOUTÉES)
+# ROUTES PERSONNEL
 # ============================================
 
 @app.route('/api/personnel', methods=['GET'])
@@ -238,7 +281,7 @@ def delete_personnel(id):
     return jsonify({"status": "ok"})
 
 # ============================================
-# ROUTES PARENTS (AJOUTÉES)
+# ROUTES PARENTS
 # ============================================
 
 @app.route('/api/parents', methods=['GET'])
@@ -314,6 +357,137 @@ def get_absences():
         if a['heure_debut']: a['heure_debut'] = a['heure_debut'].strftime('%H:%M:%S')
         if a['heure_fin']: a['heure_fin'] = a['heure_fin'].strftime('%H:%M:%S')
     return jsonify(absences)
+
+@app.route('/api/absences', methods=['POST'])
+def add_absence():
+    data = request.json
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('''
+        INSERT INTO absences (eleve_nom, classe, date, heure_debut, lieu, camera_id, permission_accordee)
+        VALUES (%s, %s, %s, %s, %s, %s, NULL)
+        RETURNING id
+    ''', (
+        data['eleve_nom'],
+        data['classe'],
+        data['date'],
+        data['heure_debut'],
+        data.get('lieu', 'Salle de classe'),
+        data.get('camera_id')
+    ))
+    absence_id = c.fetchone()[0]
+    conn.commit()
+    conn.close()
+    return jsonify({"status": "ok", "id": absence_id}), 201
+
+@app.route('/api/absences/<int:id>/fin', methods=['PUT'])
+def update_absence_fin(id):
+    data = request.json
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('''
+        UPDATE absences 
+        SET heure_fin = %s, 
+            duree_minutes = EXTRACT(EPOCH FROM (%s::time - heure_debut))/60
+        WHERE id = %s
+    ''', (data['heure_fin'], data['heure_fin'], id))
+    conn.commit()
+    conn.close()
+    return jsonify({"status": "ok"})
+
+# ============================================
+# ROUTES EMPLOI DU TEMPS
+# ============================================
+
+@app.route('/api/emploi_du_temps', methods=['GET'])
+def get_emploi_du_temps():
+    conn = get_db_connection()
+    c = conn.cursor(cursor_factory=RealDictCursor)
+    c.execute("""
+        SELECT e.*, p.nom as prof_nom, p.prenom as prof_prenom 
+        FROM emploi_du_temps e 
+        LEFT JOIN personnel p ON e.professeur_id = p.id 
+        ORDER BY e.jour_semaine, e.heure_debut
+    """)
+    emplois = c.fetchall()
+    conn.close()
+    return jsonify(emplois)
+
+@app.route('/api/emploi_du_temps', methods=['POST'])
+def add_emploi_du_temps():
+    data = request.json
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('''
+        INSERT INTO emploi_du_temps (classe, professeur_id, jour_semaine, heure_debut, heure_fin)
+        VALUES (%s, %s, %s, %s, %s)
+    ''', (data['classe'], data['professeur_id'], data['jour_semaine'], data['heure_debut'], data['heure_fin']))
+    conn.commit()
+    conn.close()
+    return jsonify({"status": "ok"}), 201
+
+@app.route('/api/emploi_du_temps/<int:id>', methods=['DELETE'])
+def delete_emploi_du_temps(id):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("DELETE FROM emploi_du_temps WHERE id = %s", (id,))
+    conn.commit()
+    conn.close()
+    return jsonify({"status": "ok"})
+
+# ============================================
+# ROUTE VALIDATION ABSENCES
+# ============================================
+
+@app.route('/api/absences/valider', methods=['POST'])
+def valider_absences():
+    data = request.json
+    professeur_id = data.get('professeur_id')
+    validations = data.get('validations', [])
+    
+    conn = get_db_connection()
+    c = conn.cursor()
+    
+    for v in validations:
+        permission = v.get('permission_accordee')
+        absence_id = v.get('absence_id')
+        
+        if permission:
+            c.execute("""
+                UPDATE absences 
+                SET permission_accordee = TRUE, 
+                    validee_par = %s, 
+                    date_validation = %s,
+                    justifie = TRUE
+                WHERE id = %s
+            """, (professeur_id, datetime.now(), absence_id))
+        else:
+            c.execute("""
+                UPDATE absences 
+                SET permission_accordee = FALSE, 
+                    validee_par = %s, 
+                    date_validation = %s
+                WHERE id = %s
+            """, (professeur_id, datetime.now(), absence_id))
+            
+            c.execute("SELECT eleve_nom, classe, heure_debut, heure_fin FROM absences WHERE id = %s", (absence_id,))
+            absence = c.fetchone()
+            if absence:
+                c.execute("""
+                    INSERT INTO alertes (type, date, heure, lieu, details, statut)
+                    VALUES (%s, %s, %s, %s, %s, 'non_traite')
+                """, (
+                    'absence_non_justifiee',
+                    datetime.now().date(),
+                    datetime.now().time(),
+                    'Salle de classe',
+                    f"Absence non justifiée : {absence[0]} ({absence[1]}) de {absence[2]} à {absence[3]}"
+                ))
+    
+    conn.commit()
+    conn.close()
+    
+    return jsonify({"status": "ok"})
 
 # ============================================
 # DÉMARRAGE
