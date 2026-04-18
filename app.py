@@ -492,6 +492,18 @@ def valider_absences():
 
 
 # ============================================
+# ROUTE D'INITIALISATION (À METTRE ICI)
+# ============================================
+
+@app.route('/api/init-db', methods=['GET'])
+def force_init_db():
+    try:
+        init_db()
+        return jsonify({"status": "success", "message": "Tables creees avec succes !"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+# ============================================
 # DÉMARRAGE
 # ============================================
 
