@@ -19,11 +19,11 @@ def init_db():
     conn = get_db_connection()
     c = conn.cursor()
     
-    # Table compteur
+    # 1. Table compteur
     c.execute('''CREATE TABLE IF NOT EXISTS compteur (id SERIAL PRIMARY KEY, total INTEGER DEFAULT 0, derniere_mise_a_jour TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     c.execute("INSERT INTO compteur (total) SELECT 0 WHERE NOT EXISTS (SELECT 1 FROM compteur)")
     
-    # Table eleves
+    # 2. Table eleves
     c.execute('''
         CREATE TABLE IF NOT EXISTS eleves (
             id SERIAL PRIMARY KEY,
@@ -40,20 +40,30 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )''')
     
-    # Table evenements
-    c.execute('''CREATE TABLE IF NOT EXISTS evenements (
-        id SERIAL PRIMARY KEY, type VARCHAR(50) NOT NULL, personne_nom VARCHAR(200),
-        personne_statut VARCHAR(50), date DATE DEFAULT CURRENT_DATE,
-        heure TIME DEFAULT CURRENT_TIME, lieu VARCHAR(100), details TEXT,
+    # 3. Table personnel (DOIT ÊTRE AVANT absences)
+    c.execute('''CREATE TABLE IF NOT EXISTS personnel (
+        id SERIAL PRIMARY KEY, nom VARCHAR(100) NOT NULL, prenom VARCHAR(100) NOT NULL,
+        role VARCHAR(50), matiere VARCHAR(100), photo TEXT, telephone VARCHAR(20),
+        email VARCHAR(100), created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    
+    # 4. Table classes
+    c.execute('''CREATE TABLE IF NOT EXISTS classes (
+        id SERIAL PRIMARY KEY, nom VARCHAR(50) UNIQUE NOT NULL, salle VARCHAR(50),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     
-    # Table alertes
-    c.execute('''CREATE TABLE IF NOT EXISTS alertes (
-        id SERIAL PRIMARY KEY, type VARCHAR(50) NOT NULL, date DATE DEFAULT CURRENT_DATE,
-        heure TIME DEFAULT CURRENT_TIME, lieu VARCHAR(100), details TEXT, photo TEXT,
-        statut VARCHAR(20) DEFAULT 'non_traite', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    # 5. Table emploi_du_temps
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS emploi_du_temps (
+            id SERIAL PRIMARY KEY,
+            classe VARCHAR(50) NOT NULL,
+            professeur_id INTEGER REFERENCES personnel(id),
+            jour_semaine INTEGER,
+            heure_debut TIME,
+            heure_fin TIME,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
     
-    # Table absences (COMPLÈTE)
+    # 6. Table absences (APRÈS personnel)
     c.execute('''CREATE TABLE IF NOT EXISTS absences (
         id SERIAL PRIMARY KEY, 
         eleve_id INTEGER, 
@@ -73,35 +83,25 @@ def init_db():
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
     
-    # Table classes
-    c.execute('''CREATE TABLE IF NOT EXISTS classes (
-        id SERIAL PRIMARY KEY, nom VARCHAR(50) UNIQUE NOT NULL, salle VARCHAR(50),
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-    
-    # Table personnel
-    c.execute('''CREATE TABLE IF NOT EXISTS personnel (
-        id SERIAL PRIMARY KEY, nom VARCHAR(100) NOT NULL, prenom VARCHAR(100) NOT NULL,
-        role VARCHAR(50), matiere VARCHAR(100), photo TEXT, telephone VARCHAR(20),
-        email VARCHAR(100), created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-    
-    # Table parents
+    # 7. Table parents
     c.execute('''CREATE TABLE IF NOT EXISTS parents (
         id SERIAL PRIMARY KEY, nom VARCHAR(100) NOT NULL, prenom VARCHAR(100) NOT NULL,
         lien VARCHAR(50), eleve_id INTEGER REFERENCES eleves(id) ON DELETE SET NULL,
         photo TEXT, telephone VARCHAR(20), email VARCHAR(100),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
 
-    # Table emploi_du_temps
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS emploi_du_temps (
-            id SERIAL PRIMARY KEY,
-            classe VARCHAR(50) NOT NULL,
-            professeur_id INTEGER REFERENCES personnel(id),
-            jour_semaine INTEGER,
-            heure_debut TIME,
-            heure_fin TIME,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )''')
+    # 8. Table evenements
+    c.execute('''CREATE TABLE IF NOT EXISTS evenements (
+        id SERIAL PRIMARY KEY, type VARCHAR(50) NOT NULL, personne_nom VARCHAR(200),
+        personne_statut VARCHAR(50), date DATE DEFAULT CURRENT_DATE,
+        heure TIME DEFAULT CURRENT_TIME, lieu VARCHAR(100), details TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    
+    # 9. Table alertes
+    c.execute('''CREATE TABLE IF NOT EXISTS alertes (
+        id SERIAL PRIMARY KEY, type VARCHAR(50) NOT NULL, date DATE DEFAULT CURRENT_DATE,
+        heure TIME DEFAULT CURRENT_TIME, lieu VARCHAR(100), details TEXT, photo TEXT,
+        statut VARCHAR(20) DEFAULT 'non_traite', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     
     conn.commit()
     conn.close()
@@ -154,13 +154,18 @@ def recevoir_evenement():
 def get_evenements():
     conn = get_db_connection()
     c = conn.cursor(cursor_factory=RealDictCursor)
-    c.execute("SELECT type, personne_nom as nom, heure FROM evenements ORDER BY id DESC LIMIT 20")
-    events = c.fetchall()
-    conn.close()
-    for e in events:
-        if e['heure']:
-            e['heure'] = e['heure'].strftime('%H:%M:%S')
-    return jsonify(events)
+    try:
+        c.execute("SELECT type, personne_nom as nom, heure FROM evenements ORDER BY id DESC LIMIT 20")
+        events = c.fetchall()
+        for e in events:
+            if e['heure']:
+                e['heure'] = e['heure'].strftime('%H:%M:%S')
+        return jsonify(events)
+    except Exception as e:
+        print(f"❌ Erreur evenements: {e}")
+        return jsonify([])
+    finally:
+        conn.close()
 
 # ============================================
 # ROUTES ELEVES
@@ -170,10 +175,15 @@ def get_evenements():
 def get_eleves():
     conn = get_db_connection()
     c = conn.cursor(cursor_factory=RealDictCursor)
-    c.execute("SELECT id, matricule, nom, prenom, sexe, classe, photo_path FROM eleves ORDER BY nom")
-    eleves = c.fetchall()
-    conn.close()
-    return jsonify(eleves)
+    try:
+        c.execute("SELECT id, matricule, nom, prenom, sexe, classe, photo_path FROM eleves ORDER BY nom")
+        eleves = c.fetchall()
+        return jsonify(eleves)
+    except Exception as e:
+        print(f"❌ Erreur eleves: {e}")
+        return jsonify([])
+    finally:
+        conn.close()
 
 @app.route('/api/eleves', methods=['POST'])
 def add_eleve():
@@ -199,6 +209,10 @@ def add_eleve():
     except psycopg2.IntegrityError:
         conn.close()
         return jsonify({"error": "Ce matricule existe déjà"}), 400
+    except Exception as e:
+        conn.close()
+        print(f"❌ Erreur add_eleve: {e}")
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/api/eleves/<int:id>', methods=['DELETE'])
 def delete_eleve(id):
@@ -323,13 +337,18 @@ def delete_parent(id):
 def get_alertes():
     conn = get_db_connection()
     c = conn.cursor(cursor_factory=RealDictCursor)
-    c.execute("SELECT id, type, date, heure, lieu, details, photo, statut FROM alertes ORDER BY id DESC LIMIT 50")
-    alertes = c.fetchall()
-    conn.close()
-    for a in alertes:
-        if a['date']: a['date'] = a['date'].strftime('%Y-%m-%d')
-        if a['heure']: a['heure'] = a['heure'].strftime('%H:%M:%S')
-    return jsonify(alertes)
+    try:
+        c.execute("SELECT id, type, date, heure, lieu, details, photo, statut FROM alertes ORDER BY id DESC LIMIT 50")
+        alertes = c.fetchall()
+        for a in alertes:
+            if a['date']: a['date'] = a['date'].strftime('%Y-%m-%d')
+            if a['heure']: a['heure'] = a['heure'].strftime('%H:%M:%S')
+        return jsonify(alertes)
+    except Exception as e:
+        print(f"❌ Erreur alertes: {e}")
+        return jsonify([])
+    finally:
+        conn.close()
 
 @app.route('/api/alertes/<int:id>/traiter', methods=['PUT'])
 def traiter_alerte(id):
@@ -349,14 +368,19 @@ def get_absences():
     date = request.args.get('date', datetime.now().strftime("%Y-%m-%d"))
     conn = get_db_connection()
     c = conn.cursor(cursor_factory=RealDictCursor)
-    c.execute("SELECT * FROM absences WHERE date = %s ORDER BY heure_debut DESC", (date,))
-    absences = c.fetchall()
-    conn.close()
-    for a in absences:
-        if a['date']: a['date'] = a['date'].strftime('%Y-%m-%d')
-        if a['heure_debut']: a['heure_debut'] = a['heure_debut'].strftime('%H:%M:%S')
-        if a['heure_fin']: a['heure_fin'] = a['heure_fin'].strftime('%H:%M:%S')
-    return jsonify(absences)
+    try:
+        c.execute("SELECT * FROM absences WHERE date = %s ORDER BY heure_debut DESC", (date,))
+        absences = c.fetchall()
+        for a in absences:
+            if a['date']: a['date'] = a['date'].strftime('%Y-%m-%d')
+            if a['heure_debut']: a['heure_debut'] = a['heure_debut'].strftime('%H:%M:%S')
+            if a['heure_fin']: a['heure_fin'] = a['heure_fin'].strftime('%H:%M:%S')
+        return jsonify(absences)
+    except Exception as e:
+        print(f"❌ Erreur absences: {e}")
+        return jsonify([])
+    finally:
+        conn.close()
 
 @app.route('/api/absences', methods=['POST'])
 def add_absence():
@@ -489,10 +513,8 @@ def valider_absences():
     
     return jsonify({"status": "ok"})
 
-
-
 # ============================================
-# ROUTE D'INITIALISATION (À METTRE ICI)
+# ROUTE D'INITIALISATION
 # ============================================
 
 @app.route('/api/init-db', methods=['GET'])
