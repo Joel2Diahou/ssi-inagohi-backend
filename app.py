@@ -489,12 +489,19 @@ def valider_absences():
     
     return jsonify({"status": "ok"})
 
+
+
 # ============================================
 # DÉMARRAGE
 # ============================================
 
 if __name__ == '__main__':
     if DATABASE_URL:
+        print("🔄 Initialisation de la base de données...")
         init_db()
+        print("✅ Tables créées avec succès !")
+    else:
+        print("⚠️ DATABASE_URL non définie")
+    
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
